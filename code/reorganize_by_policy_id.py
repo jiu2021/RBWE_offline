@@ -15,10 +15,10 @@ import shutil
 
 current_dir = os.path.split(os.path.abspath(__file__))[0]
 project_root_path = current_dir.rsplit('/', 1)[0]
-# src_dataset_dir_path = os.path.join(project_root_path, 'testbed_dataset')  # < modeify me 
-# target_dataset_dir_path = os.path.join(project_root_path, 'ALLdatasets', 'train')
-src_dataset_dir_path = os.path.join(project_root_path, 'emulate_dataset')  # < modeify me 
-target_dataset_dir_path = os.path.join(project_root_path, 'ALLdatasets', 'evaluate')
+# src_dataset_dir_path = os.path.join(project_root_path, 'ALLdatasets', 'testbed_dataset')  # < modeify me 
+# target_dataset_dir_path = os.path.join(project_root_path, 'ALLdatasets', 'testbed_dataset_policy')
+src_dataset_dir_path = os.path.join(project_root_path, 'ALLdatasets', 'emulated_dataset')  # < modeify me 
+target_dataset_dir_path = os.path.join(project_root_path, 'ALLdatasets', 'emulated_dataset_policy')
 
 
 if __name__ == "__main__":

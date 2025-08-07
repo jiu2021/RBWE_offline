@@ -18,10 +18,10 @@ humm = 1e6
 
 current_dir = os.path.split(os.path.abspath(__file__))[0]
 project_root_path = current_dir.rsplit('/', 1)[0]
-emulate_dataset_dir_path = os.path.join(project_root_path, 'ALLdatasets', 'evaluate')
+emulate_dataset_dir_path = os.path.join(project_root_path, 'ALLdatasets', 'emulated_dataset')
 onnx_models_dir_path = os.path.join(project_root_path, 'onnx_model_for_evaluation')
-onnx_model_name = ['iql_v14_520k']  # < modify your onnx model names
-
+onnx_model_name = ['Schaferct_model', 'fast_and_furious_model', 'baseline', 'v0_checkpoint_95000', 'v1_checkpoint_175000', 'v2_checkpoint_105000', 'v3_checkpoint_165000', 'v4_checkpoint_40000', 'v5_checkpoint_95000']  # < modify your onnx model names
+# onnx_model_name = ['baseline', 'Schaferct_model', 'fast_and_furious_model', 'v2_checkpoint_105000', 'v4_checkpoint_40000']  # < modify your onnx model names
 
 def get_over_estimated_rate(x, y):
     l = [max((xx - yy) / yy, 0) for xx, yy in zip(x, y)]
@@ -47,7 +47,8 @@ def evaluate_every_f(e_f_path):
     with open(e_f_path, "r") as file:
         call_data = json.load(file)
 
-        observations = np.asarray(call_data['observations'], dtype=np.float32)
+        observations_150 = np.asarray(call_data['observations'], dtype=np.float32)
+        observations_120 = np.asarray(call_data['observations'], dtype=np.float32)[:, :120]
 
         behavior_policy = np.asarray(call_data['bandwidth_predictions'], dtype=np.float32) / humm
         true_capacity = np.asarray(call_data['true_capacity'], dtype=np.float32) / humm
@@ -59,17 +60,25 @@ def evaluate_every_f(e_f_path):
         
         # then go with these models
         for onnx_name in onnx_model_name:
+            if onnx_name == "checkpoint_580000":
+                observations = observations_120
+            else:
+                observations = observations_150
+
             onnx_m_path = os.path.join(onnx_models_dir_path, onnx_name + '.onnx')
             ort_session = ort.InferenceSession(onnx_m_path)
             predictions = []
-            hc = np.zeros((1, 1), dtype=np.float32)
-
+            if onnx_name == 'fast_and_furious_model':
+                hidden_state, cell_state = np.zeros((1, 128), dtype=np.float32), np.zeros((1, 128), dtype=np.float32)
+            else:
+                hidden_state, cell_state = np.zeros((1, 1), dtype=np.float32), np.zeros((1, 1), dtype=np.float32)
+            # hc = np.zeros((1, 1), dtype=np.float32)
             for t in range(observations.shape[0]):
                 feed_dict = {'obs': observations[t:t+1,:].reshape(1,1,-1),
-                            'hidden_states': hc,
-                            'cell_states': hc
+                            'hidden_states': hidden_state,
+                            'cell_states': cell_state
                             }
-                bw_prediction, _, _ = ort_session.run(None, feed_dict)
+                bw_prediction, hidden_state, cell_state = ort_session.run(None, feed_dict)
                 predictions.append(bw_prediction[0,0,0])
             predictions = np.asarray(predictions, dtype=np.float32) / humm
 
@@ -109,6 +118,7 @@ if __name__ == "__main__":
 
     # plot
     models_names = ['behavior policy']
+    onnx_model_name = ['Schaferct_model', 'fast_and_furious_model', 'baseline', 'v0', 'v1', 'v2', 'v3', 'v4', 'v5']
     models_names.extend(onnx_model_name)
     type_num = len(onnx_model_name) + 1
     x = np.arange(type_num)

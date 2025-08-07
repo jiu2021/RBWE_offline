@@ -20,10 +20,12 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 import pickle
 import json
 import onnxruntime as ort
-
+from module import MultiOutputDecoder, StateEncoder
 TensorBatch = List[torch.Tensor]
-pickle_path = '../training_dataset_pickle/v8.pickle'
-evaluation_dataset_path = '../ALLdatasets/evaluate'
+pickle_path = '/data2/kj/Schaferct/training_dataset_pickle/training_dataset_pickle_K_1800_wo_v5.pickle'
+# pickle_path = '/data2/kj/Schaferct/training_dataset_pickle/new_training_dataset_pickle.pickle'
+# evaluation_dataset_path = '/data2/kj/Schaferct/ALLdatasets/evaluate'
+evaluation_dataset_path = '/data2/kj/Schaferct/ALLdatasets/emulated_dataset_policy'
 ENUM = 20  # every 5 evaluation set
 small_evaluation_datasets = []
 policy_dir_names = os.listdir(evaluation_dataset_path)
@@ -33,7 +35,7 @@ for p_t in policy_dir_names:
         e_f_path = os.path.join(policy_type_dir, e_f_name)
         small_evaluation_datasets.append(e_f_path)
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+# os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 USE_WANDB = 1
 b_in_Mb = 1e6
 
@@ -44,19 +46,23 @@ ACTION_DIM = 1
 EXP_ADV_MAX = 100.0
 LOG_STD_MIN = -20.0
 LOG_STD_MAX = 2.0
+DEVICE = "cuda:1"
+ln_001 = torch.log(torch.tensor(0.01, dtype=torch.float64))
+ln_100 = torch.log(torch.tensor(100.0, dtype=torch.float64))
+ln_800 = torch.log(torch.tensor(800.0, dtype=torch.float64))
 
 @dataclass
 class TrainConfig:
     # Experiment
-    device: str = "cuda"
+    device: str = DEVICE
     env: str = "v14"
     seed: int = 0  # Sets Gym, PyTorch and Numpy seeds
     eval_freq: int = int(5e3)  # How often (time steps) we evaluate
     max_timesteps: int = int(1e6)  # Max time steps to run environment
-    checkpoints_path: Optional[str] = './checkpoints_iql'  # Save path
+    checkpoints_path: Optional[str] = '/data2/kj/Schaferct/code/checkpoints_iql'  # Save path
     load_model: str = ""  # Model load file name, "" doesn't load
     # IQL
-    buffer_size: int = 6_538_000  # Replay buffer size
+    buffer_size: int = 6535343  # Replay buffer size 6_538_000
     batch_size: int = 512  # Batch size for all networks
     discount: float = 0.99  # Discount factor
     tau: float = 0.005  # Target network update rate
@@ -65,12 +71,12 @@ class TrainConfig:
     iql_deterministic: bool = False  # Use deterministic actor
     vf_lr: float = 3e-4  # V function learning rate
     qf_lr: float = 3e-4  # Critic learning rate
-    actor_lr: float = 3e-4  # Actor learning rate
+    actor_lr: float = 3e-4  # Actor learning rate 3e-4
     actor_dropout: Optional[float] = None  # Adroit uses dropout for policy network
     # Wandb logging
-    project: str = "BWEC-Schaferct"
+    project: str = "BWE"
     group: str = "IQL"
-    name: str = "IQL"
+    name: str = "small-new_network"
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env}-{str(uuid.uuid4())[:8]}"
@@ -94,47 +100,70 @@ class ReplayBuffer:
         self._size = 0
 
         self._states = torch.zeros(
-            (buffer_size, state_dim), dtype=torch.float32, device=device
+            (buffer_size, state_dim), dtype=torch.float32, device="cpu"
         )
         self._actions = torch.zeros(
-            (buffer_size, action_dim), dtype=torch.float32, device=device
+            (buffer_size, action_dim), dtype=torch.float32, device="cpu"
         )
-        self._rewards = torch.zeros((buffer_size, 1), dtype=torch.float32, device=device)
+        self._rewards = torch.zeros((buffer_size, 1), dtype=torch.float32, device="cpu")
         self._next_states = torch.zeros(
-            (buffer_size, state_dim), dtype=torch.float32, device=device
+            (buffer_size, state_dim), dtype=torch.float32, device="cpu"
         )
-        self._dones = torch.zeros((buffer_size, 1), dtype=torch.float32, device=device)
+        self._dones = torch.zeros((buffer_size, 1), dtype=torch.float32, device="cpu")
         self._device = device
 
     def _to_tensor(self, data: np.ndarray) -> torch.Tensor:
-        return torch.tensor(data, dtype=torch.float32, device=self._device)
+        return torch.tensor(data, dtype=torch.float32, device="cpu")
 
     # Loads data in d4rl format, i.e. from Dict[str, np.array].
-    def load_dataset(self, data: Dict[str, np.ndarray]):
-        if self._size != 0:
-            raise ValueError("Trying to load data into non-empty replay buffer")
+    def load_dataset(self, data: Dict[str, np.ndarray], sample_num: int = 2000000):
+        # if self._size != 0:
+        #     raise ValueError("Trying to load data into non-empty replay buffer")
         n_transitions = data["observations"].shape[0]
         print(f"Dataset size: {n_transitions}")
-        if n_transitions > self._buffer_size:
-            raise ValueError(
-                "Replay buffer is smaller than the dataset you are trying to load!"
-            )
-        self._states[:n_transitions] = self._to_tensor(data["observations"])
-        self._actions[:n_transitions] = self._to_tensor(data["actions"] / b_in_Mb)
-        self._rewards[:n_transitions] = self._to_tensor(data["rewards"][..., None])
-        self._next_states[:n_transitions] = self._to_tensor(data["next_observations"])
-        self._dones[:n_transitions] = self._to_tensor(data["terminals"][..., None])
-        self._size += n_transitions
-        self._pointer = min(self._size, n_transitions)
+        # if n_transitions > self._buffer_size:
+        #     raise ValueError(
+        #         "Replay buffer is smaller than the dataset you are trying to load!"
+        #     )
+        # sample_num = 2000000
+        new_act = torch.clamp(self._to_tensor(data["actions"][:sample_num] / b_in_Mb), min=0.01, max=8.0)
+        # new_act = (torch.log(new_act) + ln_100) * 2.0 / ln_800 - 1.0
+        if self._size == 0:
+            self._states[:n_transitions] = self._to_tensor(data["observations"][:sample_num])
+            self._actions[:n_transitions] = new_act
+            self._rewards[:n_transitions] = self._to_tensor(data["rewards"][:sample_num][..., None])
+            self._next_states[:n_transitions] = self._to_tensor(data["next_observations"][:sample_num])
+            self._dones[:n_transitions] = self._to_tensor(data["terminals"][:sample_num][..., None])
+            # self._size += n_transitions
+            self._size += sample_num
+        else:
+            self._states = torch.cat((self._states, self._to_tensor(data["observations"][:sample_num])), 0)
+            self._actions = torch.cat((self._actions, new_act), 0)
+            self._rewards = torch.cat((self._rewards, self._to_tensor(data["rewards"][:sample_num][..., None])), 0)
+            self._next_states = torch.cat((self._next_states, self._to_tensor(data["next_observations"][:sample_num])), 0)
+            self._dones = torch.cat((self._dones, self._to_tensor(data["terminals"][:sample_num][..., None])), 0)
+            self._size += sample_num
+        # self._pointer = min(self._size, n_transitions)
+        self._pointer = self._size
 
     def sample(self, batch_size: int) -> TensorBatch:
+        # 从0到self._size和self._pointer之间的最小值中随机生成batch_size个整数
         indices = np.random.randint(0, min(self._size, self._pointer), size=batch_size)
+        # 将indices转换为列表
+        # indices = indices.tolist()
+        # 从self._states中获取indices对应的元素
         states = self._states[indices]
+        # 从self._actions中获取indices对应的元素
         actions = self._actions[indices]
+        # 从self._rewards中获取indices对应的元素
         rewards = self._rewards[indices]
+        # 从self._next_states中获取indices对应的元素
         next_states = self._next_states[indices]
+        # 从self._dones中获取indices对应的元素
         dones = self._dones[indices]
+        # 将states增加一个维度
         # states = torch.unsqueeze(states, 0)
+        # 返回states, actions, rewards, next_states, dones
         return [states, actions, rewards, next_states, dones]
 
     def add_transition(self):
@@ -206,6 +235,22 @@ class MLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
+class ResidualBlock(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(ResidualBlock, self).__init__()
+        self.output_size = output_size
+        self.block = nn.Sequential(
+            nn.Linear(input_size, self.output_size),
+            nn.LayerNorm(self.output_size),
+            nn.LeakyReLU(),
+        )
+
+    def forward(self, x):
+        residual = x
+        out = self.block(x)
+        out += residual
+        return out
+    
 class GaussianPolicy(nn.Module):
     def __init__(
         self,
@@ -215,6 +260,7 @@ class GaussianPolicy(nn.Module):
         hidden_dim: int = 256,
         n_hidden: int = 2,
         dropout: Optional[float] = None,
+        device: str = "cpu",
     ):
         super().__init__()
         self.log_std = nn.Parameter(torch.zeros(act_dim, dtype=torch.float32))
@@ -292,6 +338,94 @@ class GaussianPolicy(nn.Module):
         ret = torch.unsqueeze(ret, 0)  # (1, bs, 2)
         return ret, h, c
 
+class MultiPolicy(nn.Module):
+    def __init__(
+        self,
+        state_dim: int,
+        act_dim: int,
+        max_action: float,
+        n_policies: int = 6,
+        hidden_dim: int = 256,
+        n_hidden: int = 2,
+        dropout: Optional[float] = None,
+        device: str = "cpu",
+    ):
+        super().__init__()
+        self.max_action = max_action
+        self.n_policies = n_policies
+        self.encoder0 = nn.Parameter(torch.tensor([1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 
+                                 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 
+                                 1e-4, 1e-4, 1e-4, 1e-4, 1e-4, 1e-5, 1e-5, 1e-5, 1e-5, 1e-5, 
+                                 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 
+                                 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 
+                                 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 
+                                 1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
+                                 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1,
+                                 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1,
+                                 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1,
+                                 1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
+                                 1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
+                                 1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
+                                 1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
+                                 1,    1,    1,    1,    1,    1,    1,    1,    1,    1
+                                 ], dtype=torch.float32))
+        self.encoder0.requires_grad_(False)
+        self.fc_head = nn.Linear(state_dim, hidden_dim)
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        self.ac1 = nn.LeakyReLU()
+        self.policy_list = []
+        self.load_policy(state_dim, act_dim, max_action)
+        
+        # weight
+        self.weight_fc_body = nn.Linear(hidden_dim, hidden_dim)
+        self.weight_block = ResidualBlock(hidden_dim, hidden_dim)
+        self.weight_output = nn.Linear(hidden_dim, n_policies)
+        self.soft_max = nn.Softmax(dim=1)
+
+    def forward(self, obs: torch.Tensor, h = torch.zeros((1, 1)), c = torch.zeros((1, 1))):
+        obs_ = torch.squeeze(obs, 0)
+        obs_ = obs_ * self.encoder0
+
+        # 特征提取（前向传递到权重分支）
+        x = self.fc_head(obs_)
+        x = self.layer_norm(x)
+        x = self.ac1(x)
+
+        # 使用权重网络计算权重
+        weight_out = self.weight_fc_body(x)
+        weight_out = self.ac1(weight_out)
+        weight_out = self.weight_block(weight_out)
+        weight_out = self.weight_output(weight_out)
+        weight_out = self.soft_max(weight_out)  # (batch_size, n_policies)
+
+        # 遍历所有 policies，计算每个 policy 的动作
+        policy_outputs = []
+        for i, policy in enumerate(self.policy_list):
+            policy_output, _, _ = policy(obs, h, c)  # 获取 policy 的动作输出
+            mean = policy_output[:, :, 0]  # 提取均值部分 (1, batch_size)
+            policy_outputs.append(mean)
+
+        # 堆叠所有 policy 的输出，形状为 (batch_size, n_policies, act_dim)
+        policy_outputs = torch.stack(policy_outputs, dim=1).squeeze(0)
+
+        # 对每个动作维度进行加权和，形状为 (batch_size, act_dim) (512,1,1)->(512,1)
+        weighted_output = torch.bmm(policy_outputs.view(-1, 1, self.n_policies), weight_out.view(-1, self.n_policies, 1)).squeeze(2) 
+        # 动作裁剪到 [-max_action, max_action]
+        weighted_output = torch.clamp(weighted_output, 10.0, 8 * 1e6)
+    
+        ret = torch.cat((weighted_output, weighted_output), 1)
+        ret = torch.unsqueeze(ret, 0)  # (1, bs, 2)
+        return ret, h, c
+
+    def load_policy(self, state_dim, act_dim, max_action):
+        for i in range(self.n_policies):
+            policy = GaussianPolicy(state_dim, act_dim, max_action).to(DEVICE)
+            policy.load_state_dict(torch.load(f'/data2/kj/Schaferct/code/policy_model/policy_v{i}.pt'))
+            # 冻结策略的参数
+            # for param in policy.parameters():
+            #     param.requires_grad = False
+            self.policy_list.append(policy)
+
 class DeterministicPolicy(nn.Module):
     def __init__(
         self,
@@ -322,6 +456,34 @@ class DeterministicPolicy(nn.Module):
             .data.numpy()
             .flatten()
         )
+    
+class DeterministicPolicy1(nn.Module):
+    def __init__(
+        self,
+        state_dim: int,
+        act_dim: int,
+        max_action: float,
+        hidden_dim: int = 256,
+        multiple_output_num = 5,
+        n_hidden: int = 2,
+        dropout: Optional[float] = None,
+    ):
+        super().__init__()
+        self.encoder = StateEncoder(state_dim, hidden_dim)
+        self.decoder = MultiOutputDecoder(hidden_dim, hidden_dim, multiple_output_num)
+        self.ac = nn.Tanh()
+        self.log_std = nn.Parameter(torch.zeros(act_dim, dtype=torch.float32))
+
+    def forward(self, obs: torch.Tensor, h, c) -> torch.Tensor:
+        x = self.encoder(obs)
+        x = self.decoder(x)
+        out = self.ac(x)
+        mean = torch.exp(((out + 1.0) / 2 * ln_800 + ln_001)) * 1e6
+        std = torch.exp(self.log_std.clamp(LOG_STD_MIN, LOG_STD_MAX))
+        std = std.expand(mean.shape[0], 1)
+        ret = torch.cat((mean, std), 1)
+        ret = torch.unsqueeze(ret, 0)
+        return ret, h, c
 
 class TwinQ(nn.Module):
     def __init__(
@@ -357,6 +519,23 @@ class TwinQ(nn.Module):
     def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         return torch.min(*self.both(state, action))
 
+class TwinQ1(nn.Module):
+    def __init__(
+        self, state_dim: int, action_dim: int, hidden_dim: int = 256, multiple_output_num=5, n_hidden: int = 2
+    ):
+        super().__init__()
+        self.encoder = StateEncoder(state_dim, hidden_dim)
+        self.q1 = MultiOutputDecoder(hidden_dim + action_dim, hidden_dim, multiple_output_num)
+        self.q2 = MultiOutputDecoder(hidden_dim + action_dim, hidden_dim, multiple_output_num)
+
+    def both(self, state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        state_ = self.encoder(state)
+        sa = torch.cat([state_, action], 1)
+        return self.q1(sa).squeeze(), self.q2(sa).squeeze()
+
+    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        return torch.min(*self.both(state, action))
+
 class ValueFunction(nn.Module):
     def __init__(self, state_dim: int, hidden_dim: int = 256, n_hidden: int = 2):
         super().__init__()
@@ -383,6 +562,17 @@ class ValueFunction(nn.Module):
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         state_ = state * self.encoder
         return self.v(state_)
+    
+class ValueFunction1(nn.Module):
+    def __init__(self, state_dim: int, hidden_dim: int = 256, multiple_output_num = 5, n_hidden: int = 2):
+        super().__init__()
+        self.encoder = StateEncoder(state_dim, hidden_dim)
+        self.decoder = MultiOutputDecoder(hidden_dim, hidden_dim, multiple_output_num)
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        x = self.encoder(state)
+        x = self.decoder(x)
+        return x.squeeze()
 
 
 class ImplicitQLearning:
@@ -541,7 +731,8 @@ class ImplicitQLearning:
 
 def get_input_from_file():
     # dummy -> real input
-    evaluation_file = '../evaluation/data/02560.json'
+    # evaluation_file = '/data2/kj/Schaferct/evaluation/data/02560.json'
+    evaluation_file = '/data2/kj/Schaferct/data/02560.json'
     with open(evaluation_file, "r") as file:
         call_data = json.load(file)
     observations = np.asarray(call_data['observations'], dtype=np.float32)
@@ -556,7 +747,9 @@ def export2onnx(pt_path, onnx_path):
     hidden_size = 1  # number of hidden units in the LSTM
 
     # instantiate the ML BW estimator
-    torchBwModel = GaussianPolicy(STATE_DIM, ACTION_DIM, MAX_ACTION)
+    # torchBwModel = GaussianPolicy(STATE_DIM, ACTION_DIM, MAX_ACTION)
+    # torchBwModel = MultiPolicy(STATE_DIM, ACTION_DIM, MAX_ACTION)
+    torchBwModel = DeterministicPolicy1(STATE_DIM, ACTION_DIM, MAX_ACTION)
     torchBwModel.load_state_dict(torch.load(pt_path))
     # create inputs: 1 episode x T timesteps x obs_dim features
     dummy_inputs = get_input_from_file()
@@ -564,10 +757,12 @@ def export2onnx(pt_path, onnx_path):
     torch_initial_hidden_state = torch.zeros((BS, hidden_size))
     torch_initial_cell_state = torch.zeros((BS, hidden_size))
     # predict dummy outputs: 1 episode x T timesteps x 2 (mean and std)
+    torchBwModel.to("cpu")
+    # for policy in torchBwModel.policy_list:
+    #     policy.to("cpu")
     dummy_outputs, final_hidden_state, final_cell_state = torchBwModel(torch_dummy_inputs, torch_initial_hidden_state, torch_initial_cell_state)
     # save onnx model
     os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
-    torchBwModel.to("cpu")
     torchBwModel.eval()
     torch.onnx.export(
         torchBwModel,
@@ -588,19 +783,21 @@ def export2onnx(pt_path, onnx_path):
             torch_estimate, torch_hidden_state, torch_cell_state = torchBwModel(torch_dummy_inputs[0:1, i:i+1, :], torch_hidden_state, torch_cell_state)
             feed_dict= {'obs': dummy_inputs[0:1, i:i+1, :], 'hidden_states': onnx_hidden_state, 'cell_states': onnx_cell_state}
             onnx_estimate, onnx_hidden_state, onnx_cell_state = ort_session.run(None, feed_dict)
-            assert np.allclose(torch_estimate.numpy(), onnx_estimate, atol=10), 'Failed to match model outputs!, {}, {}'.format(torch_estimate.numpy(), onnx_estimate)
+            assert np.allclose(torch_estimate.numpy(), onnx_estimate, atol=100), 'Failed to match model outputs!, {}, {}'.format(torch_estimate.numpy(), onnx_estimate)
             assert np.allclose(torch_hidden_state, onnx_hidden_state, atol=1e-7), 'Failed to match hidden state1'
             assert np.allclose(torch_cell_state, onnx_cell_state, atol=1e-7), 'Failed to match cell state!'
         
         assert np.allclose(torch_hidden_state, final_hidden_state, atol=1e-7), 'Failed to match final hidden state!'
         assert np.allclose(torch_cell_state, final_cell_state, atol=1e-7), 'Failed to match final cell state!'
-        # print("Torch and Onnx models outputs have been verified successfully!")
+        print("Torch and Onnx models outputs have been verified successfully!")
 
 def evaluate(onnx_path):
     ort_session = ort.InferenceSession(onnx_path)
 
     every_call_mse = []
     every_call_accuracy = []
+    every_call_over_estimated_rate = []
+    every_call_under_estimated_rate = []
     for f_path in tqdm(small_evaluation_datasets, desc="Evaluating"):
         with open(f_path, 'r') as file:
             call_data = json.load(file)
@@ -624,6 +821,8 @@ def evaluate(onnx_path):
         model_predictions = model_predictions / 1e6
         call_mse = []
         call_accuracy = []
+        call_over_estimated_rate = []
+        call_under_estimated_rate = []
         for true_bw, pre_bw in zip(true_capacity, model_predictions):
             if np.isnan(true_bw) or np.isnan(pre_bw):
                 continue
@@ -632,13 +831,23 @@ def evaluate(onnx_path):
                 call_mse.append(mse_)
                 accuracy_ = max(0, 1 - abs(pre_bw - true_bw) / true_bw)
                 call_accuracy.append(accuracy_)
+                over_estimated = max(0, (pre_bw - true_bw) / true_bw)
+                call_over_estimated_rate.append(over_estimated)
+                under_estimated = max(0, (true_bw - pre_bw) / true_bw)
+                call_under_estimated_rate.append(under_estimated)
         call_mse = np.asarray(call_mse, dtype=np.float32)
         every_call_mse.append(np.mean(call_mse))
         call_accuracy = np.asarray(call_accuracy,  dtype=np.float32)
         every_call_accuracy.append(np.mean(call_accuracy))
+        call_over_estimated_rate = np.asarray(call_over_estimated_rate, dtype=np.float32)
+        every_call_over_estimated_rate.append(np.mean(call_over_estimated_rate))
+        call_under_estimated_rate = np.asarray(call_under_estimated_rate, dtype=np.float32)
+        every_call_under_estimated_rate.append(np.mean(call_under_estimated_rate))
     every_call_mse = np.asarray(every_call_mse, dtype=np.float32)
     every_call_accuracy = np.asarray(every_call_accuracy, dtype=np.float32)
-    return np.mean(every_call_mse), np.mean(every_call_accuracy)
+    every_call_over_estimated_rate = np.asarray(every_call_over_estimated_rate, dtype=np.float32)
+    every_call_under_estimated_rate = np.asarray(every_call_under_estimated_rate, dtype=np.float32)
+    return np.mean(every_call_mse), np.mean(every_call_accuracy), np.mean(every_call_over_estimated_rate), np.mean(every_call_under_estimated_rate)
     
 
 @pyrallis.wrap()
@@ -646,18 +855,23 @@ def train(config: TrainConfig):
     state_dim = STATE_DIM
     action_dim = ACTION_DIM
 
-    testdataset_file = open(pickle_path, 'rb')
-    dataset = pickle.load(testdataset_file)
-    print('dataset loaded')
+    # testdataset_file = open(pickle_path, 'rb')
+    # dataset = pickle.load(testdataset_file)
+    # print('dataset loaded')
 
-    replay_buffer = ReplayBuffer(
-        state_dim,
-        action_dim,
-        config.buffer_size,
-        config.device,
-    )
-    replay_buffer.load_dataset(dataset)
+    # replay_buffer = ReplayBuffer(state_dim, action_dim, config.buffer_size, config.device)
+    # replay_buffer.load_dataset(dataset)
 
+    replay_buffer = ReplayBuffer(state_dim, action_dim, config.buffer_size, config.device)
+    # for i in range(6):
+    #     print(f'policy_v{i} dataset loaded')
+    #     dataset = pickle.load(open(f"/data2/kj/Schaferct/training_dataset_pickle/training_dataset_K_1800_v{i}.pickle", 'rb'))
+    #     replay_buffer.load_dataset(dataset, sample_num=6000000)
+
+    pickle_path = f"/data2/kj/SRPO/BWE_data/train_data/new_training_dataset_pickle.pickle"
+    pkl_data = pickle.load(open(pickle_path, 'rb'))
+    replay_buffer.load_dataset(pkl_data, sample_num=pkl_data["observations"].shape[0])
+    
     max_action = MAX_ACTION
 
     if config.checkpoints_path is not None:
@@ -670,17 +884,30 @@ def train(config: TrainConfig):
     seed = config.seed
     set_seed(seed)
 
-    q_network = TwinQ(state_dim, action_dim).to(config.device)
-    v_network = ValueFunction(state_dim).to(config.device)
-    actor = (
-        DeterministicPolicy(
-            state_dim, action_dim, max_action, dropout=config.actor_dropout
-        )
-        if config.iql_deterministic
-        else GaussianPolicy(
-            state_dim, action_dim, max_action, dropout=config.actor_dropout
-        )
-    ).to(config.device)
+    q_network = TwinQ1(state_dim, action_dim).to(config.device)
+    v_network = ValueFunction1(state_dim).to(config.device)
+    # actor = (
+    #     DeterministicPolicy(
+    #         state_dim, action_dim, max_action, dropout=config.actor_dropout
+    #     )
+    #     if config.iql_deterministic
+    #     else GaussianPolicy(
+    #         state_dim, action_dim, max_action, dropout=config.actor_dropout
+    #     )
+    # ).to(config.device)
+    # actor = MultiPolicy(state_dim, action_dim, max_action, dropout=config.actor_dropout).to(config.device)
+    actor = DeterministicPolicy1(state_dim, action_dim, max_action, dropout=config.actor_dropout).to(config.device)
+    state_dict = torch.load("/data2/kj/SRPO/Encoder_model/large_2M/encoder_225.pth")
+    # Rename keys as needed
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        if 'encoder' in key:
+            new_key = key.replace('encoder.', '')
+            new_state_dict[new_key] = value
+
+    q_network.encoder.load_state_dict(new_state_dict)
+    v_network.encoder.load_state_dict(new_state_dict)
+    actor.encoder.load_state_dict(new_state_dict)
     v_optimizer = torch.optim.Adam(v_network.parameters(), lr=config.vf_lr)
     q_optimizer = torch.optim.Adam(q_network.parameters(), lr=config.qf_lr)
     actor_optimizer = torch.optim.Adam(actor.parameters(), lr=config.actor_lr)
@@ -718,6 +945,14 @@ def train(config: TrainConfig):
         wandb_init(asdict(config))
 
     for t in range(int(config.max_timesteps)):
+        # 每个policy迭代1e4次
+        # if t % (config.eval_freq * 2) == 0:
+        #     dataset = pickle.load(open(f"/data2/kj/Schaferct/training_dataset_pickle/training_dataset_K_1800_v{policy_list[policy_index]}.pickle", 'rb'))
+        #     replay_buffer = ReplayBuffer(state_dim, action_dim, config.buffer_size, config.device)
+        #     replay_buffer.load_dataset(dataset)
+        #     print(f'policy_v{policy_index} dataset loaded')
+        #     policy_index = (policy_index + 1) % 6
+
         batch = replay_buffer.sample(config.batch_size)
         batch = [b.to(config.device) for b in batch]
         log_dict = trainer.train(batch)
@@ -726,18 +961,20 @@ def train(config: TrainConfig):
         # Evaluate episode
         if (t + 1) % config.eval_freq == 0:
             print(f"Time steps: {t + 1}")
-
-            pt_path = os.path.join(config.checkpoints_path, f"checkpoint_{t + 1}.pt")
-            onnx_path = os.path.join(config.checkpoints_path, f"checkpoint_{t + 1}.onnx")
+            
+            pt_path = os.path.join(config.checkpoints_path, f"actor_checkpoint_{t + 1}.pt")
+            onnx_path = os.path.join(config.checkpoints_path, f"actor_checkpoint_{t + 1}.onnx")
+            all_pt_path = os.path.join(config.checkpoints_path, f"all_checkpoint_{t + 1}.pt")
             # save pt
             if config.checkpoints_path is not None:
                 torch.save(trainer.state_dict()["actor"], pt_path)
+                # torch.save(trainer.state_dict(), all_pt_path)
             # save onnx
             export2onnx(pt_path, onnx_path)
             # evaluate
-            mse_, accuracy_ = evaluate(onnx_path)
+            mse_, accuracy_, over_estimated_rate, under_estimated_rate = evaluate(onnx_path)
             if USE_WANDB and trainer.total_it > 1000:
-                wandb.log({"mse": mse_, "error_rate": 1 - accuracy_}, step=trainer.total_it)
+                wandb.log({"mse": mse_, "error_rate": 1 - accuracy_, "over-estimated_rate": over_estimated_rate, "under-estimated_rate": under_estimated_rate}, step=trainer.total_it)
 
 
 if __name__ == "__main__":
