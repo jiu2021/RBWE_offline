@@ -22,9 +22,11 @@ result/*.py
 !data/*.json
 
 onnx_model_for_evaluation
-
+!onnx_model
 wandb
 training_dataset_pickle/*
+!training_dataset_pickle/
+!training_dataset_pickle/example_training_data_K_4096_v*
 
 code/action*
 code/eval_list*
