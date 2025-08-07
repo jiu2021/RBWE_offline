@@ -1158,103 +1158,121 @@ def train(config: TrainConfig):
 
     for i in range(6):
         print(f'policy_v{i} tested dataset loaded')
-        dataset = pickle.load(open(f"/data2/kj/Schaferct/training_dataset_pickle/training_dataset_K_1800_v{i}_new_act.pickle", 'rb'))
+        data = pickle.load(open(f"/data2/kj/Schaferct/training_dataset_pickle/training_dataset_K_1800_v{i}_new_act.pickle", 'rb'))
         # if i == 2 or i == 5:
         #     replay_buffer.load_dataset(dataset, sample_num=int(dataset["observations"].shape[0] / 5), policy_id=i)
         #     # continue
         # else:
         #     replay_buffer.load_dataset(dataset, sample_num=int(dataset["observations"].shape[0] / 2), policy_id=i)
-        replay_buffer.load_dataset(dataset, sample_num=int(dataset["observations"].shape[0]), policy_id=i)
+        # 选择前 K 个样本
+
+        K = 4096  # 可自定义子集大小
+
+        subset = {
+            "observations": data["observations"][:K],
+            "actions": data["actions"][:K],
+            "rewards": data["rewards"][:K],
+            "next_observations": data["next_observations"][:K],
+            "terminals": data["terminals"][:K]
+        }
+
+        # 保存新的子集 pickle 文件
+        out_path = f"/data2/kj/Schaferct/training_dataset_pickle/example_training_data_K_{K}_v{i}.pickle"
+        with open(out_path, "wb") as f:
+            pickle.dump(subset, f)
+
+        print(f"Saved subset to: {out_path}")
+    #     replay_buffer.load_dataset(dataset, sample_num=int(dataset["observations"].shape[0]), policy_id=i)
         
 
-    max_action = MAX_ACTION
+    # max_action = MAX_ACTION
 
-    if config.checkpoints_path is not None:
-        print(f"Checkpoints path: {config.checkpoints_path}")
-        os.makedirs(config.checkpoints_path, exist_ok=True)
-        with open(os.path.join(config.checkpoints_path, "config.yaml"), "w") as f:
-            pyrallis.dump(config, f)
+    # if config.checkpoints_path is not None:
+    #     print(f"Checkpoints path: {config.checkpoints_path}")
+    #     os.makedirs(config.checkpoints_path, exist_ok=True)
+    #     with open(os.path.join(config.checkpoints_path, "config.yaml"), "w") as f:
+    #         pyrallis.dump(config, f)
 
-    # Set seeds
-    seed = config.seed
-    set_seed(seed)
+    # # Set seeds
+    # seed = config.seed
+    # set_seed(seed)
 
-    # q_network = TwinQ(state_dim, action_dim).to(config.device)
-    q_network = VectorizedQ(state_dim, action_dim, num_critics=TrainConfig.num_critics).to(config.device)
-    v_network = ValueFunction(state_dim).to(config.device)
-    # actor = GaussianPolicy_NewAct(state_dim, action_dim, max_action, dropout=config.actor_dropout).to(config.device)
-    actor = GMMPolicy_NewAct(state_dim, action_dim, max_action, dropout=config.actor_dropout).to(config.device)
-    # state_dict = torch.load("/data2/kj/SRPO/Encoder_model/large_2M/encoder_225.pth")
-    # Rename keys as needed
-    # new_state_dict = {}
-    # for key, value in state_dict.items():
-    #     if 'encoder' in key:
-    #         new_key = key.replace('encoder.', '')
-    #         new_state_dict[new_key] = value
-    # q_network.encoder.load_state_dict(new_state_dict)
-    # v_network.encoder.load_state_dict(new_state_dict)
-    # actor.encoder.load_state_dict(new_state_dict)
-    v_optimizer = torch.optim.Adam(v_network.parameters(), lr=config.vf_lr)
-    q_optimizer = torch.optim.Adam(q_network.parameters(), lr=config.qf_lr)
-    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=config.actor_lr)
+    # # q_network = TwinQ(state_dim, action_dim).to(config.device)
+    # q_network = VectorizedQ(state_dim, action_dim, num_critics=TrainConfig.num_critics).to(config.device)
+    # v_network = ValueFunction(state_dim).to(config.device)
+    # # actor = GaussianPolicy_NewAct(state_dim, action_dim, max_action, dropout=config.actor_dropout).to(config.device)
+    # actor = GMMPolicy_NewAct(state_dim, action_dim, max_action, dropout=config.actor_dropout).to(config.device)
+    # # state_dict = torch.load("/data2/kj/SRPO/Encoder_model/large_2M/encoder_225.pth")
+    # # Rename keys as needed
+    # # new_state_dict = {}
+    # # for key, value in state_dict.items():
+    # #     if 'encoder' in key:
+    # #         new_key = key.replace('encoder.', '')
+    # #         new_state_dict[new_key] = value
+    # # q_network.encoder.load_state_dict(new_state_dict)
+    # # v_network.encoder.load_state_dict(new_state_dict)
+    # # actor.encoder.load_state_dict(new_state_dict)
+    # v_optimizer = torch.optim.Adam(v_network.parameters(), lr=config.vf_lr)
+    # q_optimizer = torch.optim.Adam(q_network.parameters(), lr=config.qf_lr)
+    # actor_optimizer = torch.optim.Adam(actor.parameters(), lr=config.actor_lr)
 
-    kwargs = {
-        "max_action": max_action,
-        "actor": actor,
-        "actor_optimizer": actor_optimizer,
-        "q_network": q_network,
-        "q_optimizer": q_optimizer,
-        "v_network": v_network,
-        "v_optimizer": v_optimizer,
-        "discount": config.discount,
-        "tau": config.tau,
-        "device": config.device,
-        # IQL
-        "beta": config.beta,
-        "iql_tau": config.iql_tau,
-        "max_steps": config.max_timesteps,
-    }
+    # kwargs = {
+    #     "max_action": max_action,
+    #     "actor": actor,
+    #     "actor_optimizer": actor_optimizer,
+    #     "q_network": q_network,
+    #     "q_optimizer": q_optimizer,
+    #     "v_network": v_network,
+    #     "v_optimizer": v_optimizer,
+    #     "discount": config.discount,
+    #     "tau": config.tau,
+    #     "device": config.device,
+    #     # IQL
+    #     "beta": config.beta,
+    #     "iql_tau": config.iql_tau,
+    #     "max_steps": config.max_timesteps,
+    # }
 
-    print("---------------------------------------")
-    print(f"Training IQL, Env: {config.env}, Seed: {seed}")
-    print("---------------------------------------")
+    # print("---------------------------------------")
+    # print(f"Training IQL, Env: {config.env}, Seed: {seed}")
+    # print("---------------------------------------")
 
-    # Initialize actor
-    trainer = ImplicitQLearning(**kwargs)
+    # # Initialize actor
+    # trainer = ImplicitQLearning(**kwargs)
 
-    # config.load_model = "/data2/kj/Schaferct/code/checkpoints_iql/riql-new_act-beta_3.0-quantile_0-sigma_0.5-K1800-few_state-act_80-delay-jitter_nolinear-gmm_4-argmax-v14-b312c7e0/all_checkpoint_1000000.pt"
-    if config.load_model != "":
-        policy_file = Path(config.load_model)
-        trainer.load_state_dict(torch.load(policy_file))
-        actor = trainer.actor
+    # # config.load_model = "/data2/kj/Schaferct/code/checkpoints_iql/riql-new_act-beta_3.0-quantile_0-sigma_0.5-K1800-few_state-act_80-delay-jitter_nolinear-gmm_4-argmax-v14-b312c7e0/all_checkpoint_1000000.pt"
+    # if config.load_model != "":
+    #     policy_file = Path(config.load_model)
+    #     trainer.load_state_dict(torch.load(policy_file))
+    #     actor = trainer.actor
 
-    if USE_WANDB:
-        wandb_init(asdict(config))
+    # if USE_WANDB:
+    #     wandb_init(asdict(config))
 
-    for t in range(int(config.max_timesteps)):
-        batch = replay_buffer.sample(config.batch_size)
-        batch = [b.to(config.device) for b in batch]
-        log_dict = trainer.train(batch)
-        if USE_WANDB:
-            wandb.log(log_dict, step=trainer.total_it)
-        # Evaluate episode
-        if (t + 1) % config.eval_freq == 0:
-            print(f"Time steps: {t + 1}")
+    # for t in range(int(config.max_timesteps)):
+    #     batch = replay_buffer.sample(config.batch_size)
+    #     batch = [b.to(config.device) for b in batch]
+    #     log_dict = trainer.train(batch)
+    #     if USE_WANDB:
+    #         wandb.log(log_dict, step=trainer.total_it)
+    #     # Evaluate episode
+    #     if (t + 1) % config.eval_freq == 0:
+    #         print(f"Time steps: {t + 1}")
             
-            pt_path = os.path.join(config.checkpoints_path, f"actor_checkpoint_{t + 1}.pt")
-            onnx_path = os.path.join(config.checkpoints_path, f"actor_checkpoint_{t + 1}.onnx")
-            all_pt_path = os.path.join(config.checkpoints_path, f"all_checkpoint_{t + 1}.pt")
-            # save pt
-            if config.checkpoints_path is not None:
-                torch.save(trainer.state_dict()["actor"], pt_path)
-                torch.save(trainer.state_dict(), all_pt_path)
-            # save onnx
-            export2onnx(pt_path, onnx_path)
-            # evaluate
-            mse_, accuracy_, over_estimated_rate, under_estimated_rate = evaluate(onnx_path)
-            if USE_WANDB and trainer.total_it > 1000:
-                wandb.log({"mse": mse_, "error_rate": 1 - accuracy_, "over-estimated_rate": over_estimated_rate, "under-estimated_rate": under_estimated_rate}, step=trainer.total_it)
-                print({"mse": mse_, "error_rate": 1 - accuracy_, "over-estimated_rate": over_estimated_rate, "under-estimated_rate": under_estimated_rate})
+    #         pt_path = os.path.join(config.checkpoints_path, f"actor_checkpoint_{t + 1}.pt")
+    #         onnx_path = os.path.join(config.checkpoints_path, f"actor_checkpoint_{t + 1}.onnx")
+    #         all_pt_path = os.path.join(config.checkpoints_path, f"all_checkpoint_{t + 1}.pt")
+    #         # save pt
+    #         if config.checkpoints_path is not None:
+    #             torch.save(trainer.state_dict()["actor"], pt_path)
+    #             torch.save(trainer.state_dict(), all_pt_path)
+    #         # save onnx
+    #         export2onnx(pt_path, onnx_path)
+    #         # evaluate
+    #         mse_, accuracy_, over_estimated_rate, under_estimated_rate = evaluate(onnx_path)
+    #         if USE_WANDB and trainer.total_it > 1000:
+    #             wandb.log({"mse": mse_, "error_rate": 1 - accuracy_, "over-estimated_rate": over_estimated_rate, "under-estimated_rate": under_estimated_rate}, step=trainer.total_it)
+    #             print({"mse": mse_, "error_rate": 1 - accuracy_, "over-estimated_rate": over_estimated_rate, "under-estimated_rate": under_estimated_rate})
 
 
 if __name__ == "__main__":
